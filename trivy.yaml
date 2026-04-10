@@ -1,0 +1,38 @@
+# trivy.yaml — Trivy scanner configuration
+# https://aquasecurity.github.io/trivy/latest/docs/references/configuration/
+
+# Scan severity levels — fail on CRITICAL and HIGH only
+severity:
+  - CRITICAL
+  - HIGH
+
+# Exit code when vulnerabilities found
+exit-code: 1
+
+# Skip vulnerabilities with no available fix
+ignore-unfixed: true
+
+# Scan types
+scan:
+  - vuln
+  - secret
+  - misconfig
+
+# Vulnerability types to check
+vuln-type:
+  - os
+  - library
+
+# Secret scanning
+secret:
+  config: .trivyignore
+
+# Output format for CI
+format: sarif
+
+# Timeout for slow scans
+timeout: 10m
+
+# Cache directory
+cache:
+  dir: /tmp/trivy-cache

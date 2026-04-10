@@ -1,0 +1,50 @@
+# .gitleaks.toml — Gitleaks secret scanning configuration
+# Docs: https://github.com/gitleaks/gitleaks
+
+title = "secure-app Gitleaks Config"
+
+[extend]
+# Extend the default ruleset
+useDefault = true
+
+# ─────────────────────────────────────────────
+# Custom rules — project-specific patterns
+# ─────────────────────────────────────────────
+[[rules]]
+id          = "custom-jwt-secret"
+description = "Hardcoded JWT secret"
+regex       = '''(?i)(jwt[_-]?secret|jwt[_-]?key)\s*=\s*['"]([a-zA-Z0-9_\-\.]{20,})['"]'''
+tags        = ["jwt", "secret"]
+
+[[rules]]
+id          = "custom-internal-api-key"
+description = "Internal API key pattern"
+regex       = '''(?i)(api[_-]?key|apikey)\s*=\s*['"]([a-zA-Z0-9]{32,})['"]'''
+tags        = ["api-key"]
+
+# ─────────────────────────────────────────────
+# Allowlisted paths (test fixtures, docs examples)
+# ─────────────────────────────────────────────
+[allowlist]
+description = "Allowlisted files and paths"
+paths = [
+  '''.gitleaks.toml''',
+  '''.owasp-suppressions.xml''',
+  '''(.*)?_test\.go$''',
+  '''(.*)?\.test\.(ts|js)$''',
+  '''tests/fixtures/''',
+  '''docs/examples/''',
+]
+
+# Allowlisted commits (add commit SHAs of known false-positives)
+commits = []
+
+# Allowlisted regex patterns (known false-positives across all rules)
+regexes = [
+  # Example placeholder values in documentation
+  '''EXAMPLE[_-]?(KEY|SECRET|TOKEN|PASSWORD)''',
+  '''your[_-]?(key|secret|token|password)''',
+  '''<YOUR[_-]?(KEY|SECRET)>''',
+  # Terraform variable references (not actual secrets)
+  '''\$\{var\.[a-zA-Z_]+\}''',
+]

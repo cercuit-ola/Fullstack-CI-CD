@@ -1,0 +1,252 @@
+name: Secure CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write       # Required for OIDC → AWS
+  contents: read
+  security-events: write
+  pull-requests: write
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: secure-app
+  ECS_CLUSTER: secure-app-cluster
+  ECS_SERVICE: secure-app-service
+  CONTAINER_NAME: secure-app
+
+jobs:
+  # ─────────────────────────────────────────────
+  # GATE 1: OWASP Dependency Check
+  # ─────────────────────────────────────────────
+  gate-owasp:
+    name: "Gate 1 — OWASP Dependency Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: "secure-app"
+          path: "."
+          format: "SARIF"
+          out: "reports/owasp"
+          args: >
+            --failOnCVSS 7
+            --enableRetired
+            --suppression .owasp-suppressions.xml
+
+      - name: Upload OWASP SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: reports/owasp/dependency-check-report.sarif
+          category: owasp-dependency-check
+
+      - name: Upload OWASP Report Artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: owasp-report
+          path: reports/owasp/
+
+  # ─────────────────────────────────────────────
+  # GATE 2: Checkov IaC Scan
+  # ─────────────────────────────────────────────
+  gate-checkov:
+    name: "Gate 2 — Checkov IaC Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: terraform/
+          framework: terraform
+          output_format: sarif
+          output_file_path: reports/checkov/results.sarif
+          soft_fail: false
+          skip_check: >
+            CKV_AWS_115,
+            CKV_AWS_116
+          config_file: .checkov.yaml
+
+      - name: Upload Checkov SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: reports/checkov/results.sarif
+          category: checkov-iac
+
+      - name: Upload Checkov Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: checkov-report
+          path: reports/checkov/
+
+  # ─────────────────────────────────────────────
+  # GATE 3a: Gitleaks Secret Scan
+  # ─────────────────────────────────────────────
+  gate-gitleaks:
+    name: "Gate 3a — Gitleaks Secret Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        with:
+          args: detect --source . --config .gitleaks.toml --report-format sarif --report-path reports/gitleaks/results.sarif --redact --verbose
+
+      - name: Upload Gitleaks SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: reports/gitleaks/results.sarif
+          category: gitleaks-secrets
+
+  # ─────────────────────────────────────────────
+  # GATE 3b: Trivy Container & FS Scan
+  # ─────────────────────────────────────────────
+  gate-trivy:
+    name: "Gate 3b — Trivy Vulnerability Scan"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image for scanning
+        run: docker build -t secure-app:scan -f app/Dockerfile app/
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: .
+          format: sarif
+          output: reports/trivy/fs-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: 1
+          ignore-unfixed: true
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: secure-app:scan
+          format: sarif
+          output: reports/trivy/image-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: 1
+          ignore-unfixed: true
+
+      - name: Upload Trivy FS SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: reports/trivy/fs-results.sarif
+          category: trivy-filesystem
+
+      - name: Upload Trivy Image SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: reports/trivy/image-results.sarif
+          category: trivy-image
+
+      - name: Upload Trivy Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-reports
+          path: reports/trivy/
+
+  # ─────────────────────────────────────────────
+  # GATE 4: Build → Push → Deploy to ECS
+  # Requires ALL gates to pass. Uses OIDC — zero long-lived creds.
+  # ─────────────────────────────────────────────
+  deploy:
+    name: "Gate 4 — Build & Deploy to ECS"
+    runs-on: ubuntu-latest
+    needs: [gate-owasp, gate-checkov, gate-gitleaks, gate-trivy]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC — no long-lived keys)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: GitHubActions-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag & push image to ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build \
+            --build-arg BUILD_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ") \
+            --build-arg VCS_REF=${{ github.sha }} \
+            --build-arg VERSION=${{ github.ref_name }} \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:latest \
+            -f app/Dockerfile app/
+
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition ${{ env.CONTAINER_NAME }} \
+            --query taskDefinition > task-definition.json
+
+      - name: Update ECS task definition with new image
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy to Amazon ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+          wait-for-minutes: 10
+
+      - name: Notify deployment success
+        if: success()
+        run: |
+          echo "✅ Deployment successful!"
+          echo "Image: ${{ steps.build-image.outputs.image }}"
+          echo "Commit: ${{ github.sha }}"
+          echo "Actor: ${{ github.actor }}"

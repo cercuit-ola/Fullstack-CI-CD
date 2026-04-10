@@ -1,0 +1,43 @@
+# .checkov.yaml — Checkov IaC scanner configuration
+
+# Directories to scan
+directory:
+  - terraform/
+
+# Frameworks to check
+framework:
+  - terraform
+
+# Output format for CI (also produces SARIF for GitHub Security tab)
+output: cli
+
+# Hard-fail on these severity levels
+check:
+  - HIGH
+  - CRITICAL
+
+# Checks to skip with documented justification
+skip-check:
+  # CKV_AWS_115: Lambda function-level concurrent execution limit
+  # Not applicable — no Lambda in this stack
+  - CKV_AWS_115
+
+  # CKV_AWS_116: Lambda dead letter queue
+  # Not applicable — no Lambda in this stack
+  - CKV_AWS_116
+
+  # CKV_AWS_144: S3 cross-region replication
+  # ALB access log bucket — single-region intentionally, not business-critical data
+  - CKV_AWS_144
+
+# Evaluate variables
+evaluate-variables: true
+
+# Fail build on any finding at or above threshold
+soft-fail: false
+
+# Compact output in CI logs
+compact: true
+
+# Show only failed checks
+quiet: false

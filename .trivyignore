@@ -1,0 +1,9 @@
+# .trivyignore
+# Format: CVE-ID [expiry date] # comment
+#
+# POLICY: All ignores must have:
+#   - An expiry date (max 90 days)
+#   - A comment explaining the accepted risk and ticket reference
+#
+# Example:
+# CVE-2023-12345 exp:2024-06-01 # False positive in test-only dep. Ticket: SEC-123
